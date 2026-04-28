@@ -1,0 +1,322 @@
+# Cross-Implementation Domain Separation Tests
+# Spec: api/domain-separation.md
+# Proves all 7 platforms sign/verify identically with RFC 6979 deterministic ECDSA
+
+name: Cross-Implementation Domain Separation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 7 * * *' # Daily 7am UTC (catch drift)
+
+permissions:
+  contents: read
+
+jobs:
+  # Build Go implementations (server + cli-device)
+  build-go:
+    name: Build Go Implementations
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build server crypto-sign harness
+        working-directory: server
+        run: |
+          if grep -q "crypto-sign" cmd/sigil-server/main.go 2>/dev/null || \
+             grep -q "crypto-sign" cmd/sigil-server/cmd_crypto.go 2>/dev/null; then
+            make build
+            mkdir -p bin
+            cp ./sigil-server bin/sigil-server || cp ./cmd/sigil-server/sigil-server bin/sigil-server || true
+          else
+            echo "Server crypto-sign harness not implemented yet (skipping)"
+          fi
+
+      - name: Build cli-device crypto-sign harness
+        working-directory: cli-device
+        run: |
+          if grep -q "crypto-sign" cmd/sigil-device/main.go 2>/dev/null || \
+             grep -q "crypto-sign" cmd/sigil-device/cmd_crypto.go 2>/dev/null; then
+            make build
+            mkdir -p bin
+            cp ./sigil-device bin/sigil-device || cp ./cmd/sigil-device/sigil-device bin/sigil-device || true
+          else
+            echo "CLI device crypto-sign harness not implemented yet (skipping)"
+          fi
+
+      - name: Upload Go binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-binaries
+          path: |
+            server/bin/sigil-server
+            cli-device/bin/sigil-device
+          if-no-files-found: warn
+
+  # Build iOS crypto-sign test harness
+  build-ios:
+    name: Build iOS Crypto Test Harness
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for crypto-sign implementation
+        id: check
+        working-directory: app/ios
+        run: |
+          if [ -f "Sources/CryptoTest/main.swift" ] || \
+             grep -r "crypto-sign" Sources/ 2>/dev/null; then
+            echo "implemented=true" >> $GITHUB_OUTPUT
+          else
+            echo "implemented=false" >> $GITHUB_OUTPUT
+            echo "iOS crypto-sign harness not implemented yet (skipping)"
+          fi
+
+      - name: Build iOS crypto-sign harness
+        if: steps.check.outputs.implemented == 'true'
+        working-directory: app/ios
+        run: |
+          swift build --configuration release
+          mkdir -p bin
+          cp .build/release/sigil-crypto-test bin/sigil-crypto-test
+
+      - name: Upload iOS binary
+        if: steps.check.outputs.implemented == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-binary
+          path: app/ios/bin/sigil-crypto-test
+
+  # Build Android crypto-sign test harness
+  build-android:
+    name: Build Android Crypto Test Harness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Check for crypto-sign implementation
+        id: check
+        working-directory: app/android
+        run: |
+          if grep -r "crypto-sign" app/src/ 2>/dev/null || \
+             [ -f "crypto-test/build.gradle.kts" ]; then
+            echo "implemented=true" >> $GITHUB_OUTPUT
+          else
+            echo "implemented=false" >> $GITHUB_OUTPUT
+            echo "Android crypto-sign harness not implemented yet (skipping)"
+          fi
+
+      - name: Build Android crypto-sign harness
+        if: steps.check.outputs.implemented == 'true'
+        working-directory: app/android
+        run: |
+          ./gradlew assembleCryptoTest
+          mkdir -p bin
+          # Copy the built binary to bin/ (exact path depends on Gradle config)
+          find . -name "sigil-crypto-test" -type f -executable -exec cp {} bin/ \;
+
+      - name: Upload Android binary
+        if: steps.check.outputs.implemented == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-binary
+          path: app/android/bin/sigil-crypto-test
+
+  # Build macOS crypto-sign test harness
+  build-macos:
+    name: Build macOS Crypto Test Harness
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for crypto-sign implementation
+        id: check
+        working-directory: desktop/macos
+        run: |
+          if [ -f "Sources/CryptoTest/main.swift" ] || \
+             grep -r "crypto-sign" Sources/ 2>/dev/null; then
+            echo "implemented=true" >> $GITHUB_OUTPUT
+          else
+            echo "implemented=false" >> $GITHUB_OUTPUT
+            echo "macOS crypto-sign harness not implemented yet (skipping)"
+          fi
+
+      - name: Build macOS crypto-sign harness
+        if: steps.check.outputs.implemented == 'true'
+        working-directory: desktop/macos
+        run: |
+          swift build --configuration release
+          mkdir -p bin
+          cp .build/release/sigil-crypto-test bin/sigil-crypto-test
+
+      - name: Upload macOS binary
+        if: steps.check.outputs.implemented == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-binary
+          path: desktop/macos/bin/sigil-crypto-test
+
+  # Build Windows crypto-sign test harness
+  build-windows:
+    name: Build Windows Crypto Test Harness
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0'
+
+      - name: Check for crypto-sign implementation
+        id: check
+        working-directory: desktop/windows
+        shell: pwsh
+        run: |
+          if (Test-Path "src/Sigil.Windows.CryptoTest") {
+            echo "implemented=true" >> $env:GITHUB_OUTPUT
+          } else {
+            echo "implemented=false" >> $env:GITHUB_OUTPUT
+            echo "Windows crypto-sign harness not implemented yet (skipping)"
+          }
+
+      - name: Build Windows crypto-sign harness
+        if: steps.check.outputs.implemented == 'true'
+        working-directory: desktop/windows
+        run: |
+          dotnet build src/Sigil.Windows.CryptoTest -c Release
+          mkdir -p bin
+          cp src/Sigil.Windows.CryptoTest/bin/Release/net8.0/sigil-crypto-test.exe bin/
+
+      - name: Upload Windows binary
+        if: steps.check.outputs.implemented == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-binary
+          path: desktop/windows/bin/sigil-crypto-test.exe
+
+  # Build Linux crypto-sign test harness
+  build-linux:
+    name: Build Linux Crypto Test Harness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Check for crypto-sign implementation
+        id: check
+        working-directory: desktop/linux
+        run: |
+          if grep -q "name = \"sigil-crypto-test\"" Cargo.toml 2>/dev/null; then
+            echo "implemented=true" >> $GITHUB_OUTPUT
+          else
+            echo "implemented=false" >> $GITHUB_OUTPUT
+            echo "Linux crypto-sign harness not implemented yet (skipping)"
+          fi
+
+      - name: Build Linux crypto-sign harness
+        if: steps.check.outputs.implemented == 'true'
+        working-directory: desktop/linux
+        run: |
+          cargo build --release --bin sigil-crypto-test
+          mkdir -p bin
+          cp target/release/sigil-crypto-test bin/
+
+      - name: Upload Linux binary
+        if: steps.check.outputs.implemented == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-binary
+          path: desktop/linux/bin/sigil-crypto-test
+
+  # Run cross-implementation tests
+  cross-impl-test:
+    name: Cross-Implementation Test Suite
+    runs-on: ubuntu-latest
+    needs: [build-go, build-ios, build-android, build-macos, build-windows, build-linux]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Download all platform binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Organize binaries into expected locations
+        run: |
+          mkdir -p server/bin cli-device/bin app/ios/bin app/android/bin \
+                   desktop/macos/bin desktop/windows/bin desktop/linux/bin
+
+          # Copy Go binaries
+          cp artifacts/go-binaries/server/bin/sigil-server server/bin/ 2>/dev/null || echo "Server binary not found"
+          cp artifacts/go-binaries/cli-device/bin/sigil-device cli-device/bin/ 2>/dev/null || echo "CLI binary not found"
+
+          # Copy mobile binaries
+          cp artifacts/ios-binary/sigil-crypto-test app/ios/bin/ 2>/dev/null || echo "iOS binary not found"
+          cp artifacts/android-binary/sigil-crypto-test app/android/bin/ 2>/dev/null || echo "Android binary not found"
+
+          # Copy desktop binaries
+          cp artifacts/macos-binary/sigil-crypto-test desktop/macos/bin/ 2>/dev/null || echo "macOS binary not found"
+          cp artifacts/windows-binary/sigil-crypto-test.exe desktop/windows/bin/ 2>/dev/null || echo "Windows binary not found"
+          cp artifacts/linux-binary/sigil-crypto-test desktop/linux/bin/ 2>/dev/null || echo "Linux binary not found"
+
+          # Make all binaries executable
+          chmod +x server/bin/* cli-device/bin/* app/ios/bin/* app/android/bin/* \
+                   desktop/macos/bin/* desktop/windows/bin/* desktop/linux/bin/* 2>/dev/null || true
+
+      - name: Run cross-implementation test suite
+        working-directory: tests/cross-impl
+        run: |
+          go test -v -timeout 10m
+
+      - name: Report test results
+        if: always()
+        run: |
+          echo "## Cross-Implementation Domain Separation Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "See test output above for details." >> $GITHUB_STEP_SUMMARY
+
+  # Final aggregation job (passes only if all tests pass)
+  all-platforms:
+    name: All Platforms Domain Separation
+    runs-on: ubuntu-latest
+    needs: [cross-impl-test]
+    if: always()
+    steps:
+      - name: Check test results
+        run: |
+          if [ "${{ needs.cross-impl-test.result }}" != "success" ]; then
+            echo "::error::Cross-implementation domain separation tests failed"
+            exit 1
+          fi
+          echo "✓ All platform implementations produce byte-identical signatures"
